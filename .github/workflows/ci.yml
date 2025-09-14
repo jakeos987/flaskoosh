@@ -36,7 +36,7 @@ jobs:
       - name: Run Flask (background)
         run: |
           nohup python app.py &
-          sleep 10  # זמן יותר ארוך לוודא שהשרת עולה
+          sleep 20
           
       - name: Check Flask is running
         run: |
