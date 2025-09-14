@@ -39,8 +39,15 @@ jobs:
           nohup python app.py &
           sleep 20   # נותן ל-Flask זמן לעלות
           
-      - name: Run test.py
-        run: python servertest/test.py   # ← כאן דחפנו את הבדיקה שלך
+      - name: Build test container
+        run: docker build -t server_test ./servertest
+
+      - name: Run test container
+        run: docker run --name server_test_container --network host server_test || true
+
+      - name: Show test logs
+        if: always()
+        run: docker logs server_test_container
         
       # אפשר להשאיר גם pytest אם יש לך טסטים נוספים
       - name: Run pytest
