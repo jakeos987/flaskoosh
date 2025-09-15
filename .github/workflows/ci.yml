@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     env:
-      DEPLOY_HOST: ec2-11-22-33-44.compute.amazonaws.com   # תעדכן כאן את ה-DNS/ה-IP
+      DEPLOY_HOST: ec2-107-22-39-232.compute-1.amazonaws.com   # תעדכן כאן את ה-DNS/ה-IP
       DEPLOY_USER: ec2-user                                # המשתמש שלך ב-EC2
     steps:
       - name: Debug env vars
