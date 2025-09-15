@@ -54,9 +54,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     env:
-      DEPLOY_HOST: ec2-11-22-33-44.compute.amazonaws.com   # ה־DNS או ה־IP שלך
-      DEPLOY_USER: ec2-user                                # המשתמש שלך ב־EC2
+      DEPLOY_HOST: ec2-11-22-33-44.compute.amazonaws.com   # תעדכן כאן את ה-DNS/ה-IP
+      DEPLOY_USER: ec2-user                                # המשתמש שלך ב-EC2
     steps:
+      - name: Debug env vars
+        run: |
+          echo "🔎 DEPLOY_HOST=$DEPLOY_HOST"
+          echo "🔎 DEPLOY_USER=$DEPLOY_USER"
+
+      - name: Check env vars are set
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then echo "❌ DEPLOY_HOST missing"; exit 1; fi
+          if [ -z "$DEPLOY_USER" ]; then echo "❌ DEPLOY_USER missing"; exit 1; fi
+          echo "✅ Environment variables are set"
+
       - name: Create folder on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
