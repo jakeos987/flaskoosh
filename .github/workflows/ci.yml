@@ -60,8 +60,8 @@ jobs:
       - name: Create folder on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
+          host: ${{ env.107.22.39.232 }}
+          username: ${{ env.ec2-user }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             mkdir -p /var/test_for_check
