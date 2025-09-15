@@ -66,15 +66,14 @@ jobs:
       - name: Save Docker image as tar
         run: docker save my_project_image:latest -o project_image.tar
 
-      - name: Copy image to EC2
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          source: "project_image.tar"
-          target: "/tmp/"
-          tar_tmp_path: ""   # ← כאן הוספנו את התיקון
+      - name: Save private key
+        run: |
+          echo "${{ secrets.DEPLOY_KEY }}" > deploy_key
+          chmod 600 deploy_key
+
+      - name: Copy image to EC2 (rsync)
+        run: |
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no -i deploy_key" project_image.tar $DEPLOY_USER@$DEPLOY_HOST:/tmp/
 
       - name: Load image and prepare folder on EC2
         uses: appleboy/ssh-action@v0.1.10
