@@ -1,4 +1,4 @@
-name: CI and Deploy Check
+name: CI and Docker Push
 
 on:
   push:
@@ -14,51 +14,147 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
+        
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5  # עודכן לגרסה האחרונה
         with:
           python-version: '3.10'
-
+          
+      - name: Cache dependencies
+        uses: actions/cache@v4  # עודכן לגרסה האחרונה
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install requests pymysql   # נדרש בשביל test.py
-
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests pymysql pytest  # הוסיף pytest במפורש
+          
+      - name: Wait for services
+        run: |
+          # בדיקה שהשרותים זמינים לפני הרצת הטסטים
+          timeout 30s bash -c 'until curl -f http://localhost:5000/health 2>/dev/null; do sleep 1; done' || echo "Service not ready"
+          
       - name: Run Flask (background)
         run: |
-          nohup python app.py &
-          sleep 20
-
+          python app.py &
+          FLASK_PID=$!
+          echo "FLASK_PID=$FLASK_PID" >> $GITHUB_ENV
+          sleep 30  # זמן יותר ארוך לעליית השרת
+          
       - name: Build test container
         run: docker build -t server_test ./servertest
-
+        
       - name: Run test container
-        run: docker run --name server_test_container --network host server_test || true
-
+        run: |
+          docker run --name server_test_container --network host server_test || true
+          TEST_EXIT_CODE=$?
+          echo "TEST_EXIT_CODE=$TEST_EXIT_CODE" >> $GITHUB_ENV
+          
       - name: Show test logs
         if: always()
-        run: docker logs server_test_container
-
+        run: |
+          echo "=== Test Container Logs ==="
+          docker logs server_test_container || echo "No container logs available"
+          
       - name: Run pytest
         run: |
-          python -m pytest -v || true
-
+          python -m pytest -v --tb=short || echo "No pytest tests found or tests failed"
+          
+      - name: Clean up containers
+        if: always()
+        run: |
+          docker stop server_test_container || true
+          docker rm server_test_container || true
+          
       - name: Stop Flask
         if: always()
         run: |
+          if [ ! -z "$FLASK_PID" ]; then
+            kill $FLASK_PID || true
+          fi
           pkill -f "python app.py" || true
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASS }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USER }}/flask_todo_app
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     runs-on: ubuntu-latest
-    needs: test
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # הוסף תנאי
     steps:
-      - name: Create folder on EC2
-        uses: appleboy/ssh-action@v0.1.10
+      - name: Deploy to Instance via SSH
+        uses: appleboy/ssh-action@v1.0.3  # עודכן לגרסה יציבה יותר
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            mkdir -p /var/test_for_check
+            echo "Starting deployment..."
+            docker pull ${{ secrets.DOCKER_USER }}/flask_todo_app:latest
+            
+            # עצור את הקונטיינר הקיים בצורה חסודה יותר
+            if docker ps -q -f name=flask_app; then
+              echo "Stopping existing container..."
+              docker stop flask_app
+              docker wait flask_app
+            fi
+            
+            # הסר את הקונטיינר הישן
+            docker rm flask_app || true
+            
+            # הרץ קונטיינר חדש
+            echo "Starting new container..."
+            docker run -d --name flask_app \
+              -p 5000:5000 \
+              --restart unless-stopped \
+              ${{ secrets.DOCKER_USER }}/flask_todo_app:latest
+            
+            # בדוק שהקונטיינר רץ
+            sleep 10
+            if docker ps -q -f name=flask_app; then
+              echo "Deployment successful!"
+            else
+              echo "Deployment failed!"
+              docker logs flask_app
+              exit 1
+            fi
