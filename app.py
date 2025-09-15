@@ -29,6 +29,7 @@ def create_tables():
 def index():
     t = Todo.query.all()
     return render_template("index.html", list_todo=t)
+    
 
 @app.route('/add', methods=["POST"])
 def add():
