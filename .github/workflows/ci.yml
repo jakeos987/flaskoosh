@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     env:
-      DEPLOY_HOST: ec2-107-22-39-232.compute-1.amazonaws.com   # ← עדכן לפי השרת שלך
+      DEPLOY_HOST: ec2-107-22-39-232.compute-1.amazonaws.com   # ← תעדכן לפי השרת שלך
       DEPLOY_USER: ec2-user
     steps:
       - name: Checkout repo
@@ -74,6 +74,7 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           source: "project_image.tar"
           target: "/tmp/"
+          tar_tmp_path: ""   # ← כאן הוספנו את התיקון
 
       - name: Load image and prepare folder on EC2
         uses: appleboy/ssh-action@v0.1.10
