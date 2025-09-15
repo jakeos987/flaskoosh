@@ -54,14 +54,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     env:
-      DEPLOY_HOST: ec2-11-22-33-44.compute.amazonaws.com   # אתה תעדכן כאן
-      DEPLOY_USER: ec2-user                                # ואת זה גם
+      DEPLOY_HOST: ec2-11-22-33-44.compute.amazonaws.com   # ה־DNS או ה־IP שלך
+      DEPLOY_USER: ec2-user                                # המשתמש שלך ב־EC2
     steps:
       - name: Create folder on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ env.107.22.39.232 }}
-          username: ${{ env.ec2-user }}
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             mkdir -p /var/test_for_check
