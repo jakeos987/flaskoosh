@@ -95,7 +95,7 @@ jobs:
             cd /var/test_for_check
 
             # לטעון את האימייג' ששלחנו
-            sudo docker load -i /tmp/project_image.tar
+            sudo docker load -i /var/test_for_check/project_image.tar
 
             # ליצור docker-compose.yml
             cat <<EOF | sudo tee docker-compose.yml
