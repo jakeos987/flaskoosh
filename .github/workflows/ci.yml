@@ -9,7 +9,7 @@ on:
       - main
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -32,7 +32,13 @@ jobs:
           sleep 20
 
       - name: Run test container
-        run: docker build -t server_test ./servertest && docker run --rm server_test || true
+        run: |
+          docker build -t server_test ./servertest
+          docker run --name server_test_container --network host server_test || true
+
+      - name: Show test logs
+        if: always()
+        run: docker logs server_test_container
 
       - name: Run pytest
         run: |
@@ -43,30 +49,24 @@ jobs:
         run: |
           pkill -f "python app.py" || true
 
-  build:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
       - name: Build project image
         run: docker build -t my_project_image:latest .
 
-      - name: Save Docker image
-        run: docker save my_project_image:latest -o project_image.tar
-
-      - name: Upload image artifact
+      - name: Save Docker image as artifact
         uses: actions/upload-artifact@v4
         with:
           name: project_image
           path: project_image.tar
+        continue-on-error: true
+
+      - name: Save Docker image locally
+        run: docker save my_project_image:latest -o project_image.tar
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
     env:
-      DEPLOY_HOST: ec2-3-89-223-139.compute-1.amazonaws.com   # עדכן לפי ה-EC2 שלך
+      DEPLOY_HOST: ec2-3-89-223-139.compute-1.amazonaws.com   # ← תשנה ל-Public DNS שלך
       DEPLOY_USER: ec2-user
     steps:
       - name: Download image artifact
@@ -91,47 +91,30 @@ jobs:
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
+            # מתקינים Docker אם צריך
+            if ! command -v docker &> /dev/null
+            then
+              echo "Installing Docker..."
+              sudo yum update -y
+              sudo amazon-linux-extras install docker -y
+              sudo service docker start
+              sudo usermod -aG docker ec2-user
+            fi
+
+            # מתקינים Docker Compose
+            sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            docker-compose --version
+
+            # יוצרים תיקיה באינסטנס
             sudo mkdir -p /var/test_for_check
             cd /var/test_for_check
 
-            # לטעון את האימייג' ששלחנו
-            sudo docker load -i /var/test_for_check/project_image.tar
+            # טוענים את האימג' שהעברנו
+            sudo docker load -i /tmp/project_image.tar
 
-            # ליצור docker-compose.yml
-            cat <<EOF | sudo tee docker-compose.yml
-            version: "3.8"
-            services:
-              app:
-                image: my_project_image:latest
-                container_name: flask_app
-                ports:
-                  - "80:5000"
-                environment:
-                  DB_HOST: mysql
-                  DB_NAME: flask
-                  DB_USER: flask
-                  DB_PASSWORD: password
-                depends_on:
-                  - mysql
-
-              mysql:
-                image: mysql:5.7
-                container_name: flask_mysql
-                restart: unless-stopped
-                environment:
-                  MYSQL_ROOT_PASSWORD: password
-                  MYSQL_DATABASE: flask
-                  MYSQL_USER: flask
-                  MYSQL_PASSWORD: password
-                volumes:
-                  - mysql-data:/var/lib/mysql
-                ports:
-                  - "3306:3306"
-
-            volumes:
-              mysql-data:
-            EOF
-
-            # להריץ את הקומפוז
+            # אם יש קונטיינר ישן – עוצרים ומוחקים
             sudo docker-compose down || true
+
+            # מריצים עם docker-compose.yml
             sudo docker-compose up -d
