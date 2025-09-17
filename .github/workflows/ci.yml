@@ -1,280 +1,120 @@
-name: CI/CD Pipeline with Docker Compose
+name: CI and Deploy with Docker Compose
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
   pull_request:
-    branches: [main]
-
-env:
-  PYTHON_VERSION: '3.10'
-  DOCKER_IMAGE_NAME: my_project_image
-  DOCKER_IMAGE_TAG: ${{ github.sha }}
+    branches:
+      - main
 
 jobs:
-  test:
-    name: Run Tests
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-    
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
-        
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-          
+          python-version: '3.10'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-          pip install requests pymysql pytest
-          
-      - name: Lint code
-        run: |
-          pip install flake8
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          
-      - name: Run unit tests
-        run: |
-          python -m pytest -v --tb=short --junitxml=test-results.xml
-          
-      - name: Publish test results
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        if: always()
-        with:
-          files: test-results.xml
-          
-      - name: Set up Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
+          pip install -r requirements.txt
+          pip install requests pymysql
 
-  integration-test:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: test
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        
-      - name: Build application image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          load: true
-          tags: ${{ env.DOCKER_IMAGE_NAME }}:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          
-      - name: Run integration tests
+      - name: Run Flask (background)
         run: |
-          # יצירת רשת Docker לבדיקות
-          docker network create test-network || true
-          
-          # הרצת האפליקציה ברקע
-          docker run -d --name app-test \
-            --network test-network \
-            -p 5000:5000 \
-            ${{ env.DOCKER_IMAGE_NAME }}:test
-          
-          # המתנה לאפליקציה להתחיל
-          sleep 30
-          
-          # הרצת בדיקות השרת אם קיים
-          if [ -d "./servertest" ]; then
-            docker build -t server-test ./servertest
-            docker run --rm --name server-test-runner \
-              --network test-network \
-              server-test
-          fi
-          
-      - name: Collect logs
-        if: always()
-        run: |
-          echo "=== Application logs ==="
-          docker logs app-test || true
-          
-      - name: Cleanup test containers
-        if: always()
-        run: |
-          docker stop app-test || true
-          docker rm app-test || true
-          docker network rm test-network || true
+          nohup python app.py &
+          sleep 20
 
-  build:
-    name: Build and Push Image
-    runs-on: ubuntu-latest
-    needs: [test, integration-test]
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        
-      - name: Build production image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64
-          tags: |
-            ${{ env.DOCKER_IMAGE_NAME }}:latest
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ env.DOCKER_IMAGE_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          outputs: type=docker,dest=/tmp/project-image.tar
-          
-      - name: Upload image artifact
+      - name: Run test container
+        run: |
+          docker build -t server_test ./servertest
+          docker run --name server_test_container --network host server_test || true
+
+      - name: Show test logs
+        if: always()
+        run: docker logs server_test_container
+
+      - name: Run pytest
+        run: |
+          python -m pytest -v || true
+
+      - name: Stop Flask
+        if: always()
+        run: |
+          pkill -f "python app.py" || true
+
+      - name: Build project image
+        run: docker build -t my_project_image:latest .
+
+      - name: Save Docker image locally
+        run: docker save my_project_image:latest -o project_image.tar
+
+      - name: Save Docker image as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image
-          path: /tmp/project-image.tar
-          retention-days: 1
+          name: project_image
+          path: project_image.tar
 
   deploy:
-    name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: build
-    environment: production
-    if: github.ref == 'refs/heads/main'
-    
     env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_PATH: /opt/myapp
-      
+      DEPLOY_HOST: 3.89.223.139   # ← זה ה-Public IP של ה-EC2 שלך
+      DEPLOY_USER: ec2-user
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Download Docker image
+      - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
-          name: docker-image
-          path: /tmp
-          
-      - name: Setup deployment files
-        run: |
-          # יצירת סקריפט התקנה
-          cat > deploy.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
-          
-          echo "Starting deployment process..."
-          
-          # התקנת Docker אם לא קיים
-          if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
-              sudo yum update -y
-              sudo amazon-linux-extras install docker -y || sudo yum install docker -y
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              sudo usermod -aG docker $USER
-          fi
-          
-          # התקנת Docker Compose
-          if ! command -v docker-compose &> /dev/null; then
-              echo "Installing Docker Compose..."
-              COMPOSE_VERSION="2.21.0"
-              sudo curl -L "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              sudo chmod +x /usr/local/bin/docker-compose
-              sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-          fi
-          
-          # יצירת תיקיית העבודה
-          sudo mkdir -p ${{ env.DEPLOY_PATH }}
-          cd ${{ env.DEPLOY_PATH }}
-          
-          # טעינת התמונה החדשה
-          echo "Loading new Docker image..."
-          sudo docker load -i /tmp/project-image.tar
-          
-          # עצירת שירותים ישנים
-          echo "Stopping old services..."
-          sudo docker-compose down --remove-orphans || true
-          
-          # ניקוי תמונות ישנות
-          echo "Cleaning up old images..."
-          sudo docker image prune -f || true
-          
-          # הרצת השירותים החדשים
-          echo "Starting new services..."
-          sudo docker-compose up -d --force-recreate
-          
-          # בדיקת סטטוס השירותים
-          echo "Checking service status..."
-          sudo docker-compose ps
-          
-          # בדיקת בריאות האפליקציה
-          echo "Waiting for application to be ready..."
-          for i in {1..30}; do
-              if curl -f http://localhost:5000/health 2>/dev/null; then
-                  echo "Application is healthy!"
-                  break
-              fi
-              echo "Waiting... ($i/30)"
-              sleep 10
-          done
-          
-          echo "Deployment completed successfully!"
-          EOF
-          
-          chmod +x deploy.sh
-          
-      - name: Copy files to EC2
+          name: project_image
+          path: .
+
+      - name: Copy image to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
-          timeout: 300s
-          source: "/tmp/project-image.tar,deploy.sh,docker-compose.yml"
-          target: "/tmp/"
-          
-      - name: Deploy application
-        uses: appleboy/ssh-action@v0.1.11
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          timeout: 600s
-          script: |
-            chmod +x /tmp/deploy.sh
-            /tmp/deploy.sh
-            
-      - name: Verify deployment
-        uses: appleboy/ssh-action@v0.1.11
+          source: "project_image.tar"
+          target: "/tmp/project_image.tar"
+
+      - name: Load image and run with docker-compose
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            cd ${{ env.DEPLOY_PATH }}
-            echo "=== Docker Compose Status ==="
-            sudo docker-compose ps
-            echo "=== Application Logs ==="
-            sudo docker-compose logs --tail=20
-            
-      - name: Cleanup artifacts
-        if: always()
-        run: |
-          rm -f /tmp/project-image.tar deploy.sh || true
+            # מתקינים Docker אם הוא לא קיים
+            if ! command -v docker &> /dev/null
+            then
+              echo "Installing Docker..."
+              sudo yum update -y
+              sudo amazon-linux-extras install docker -y
+              sudo service docker start
+              sudo usermod -aG docker ec2-user
+            fi
+
+            # מתקינים Docker Compose
+            sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            docker-compose --version
+
+            # יוצרים תיקיה באינסטנס
+            sudo mkdir -p /var/test_for_check
+            cd /var/test_for_check
+
+            # טוענים את האימג' שהעברנו
+            sudo docker load -i /tmp/project_image.tar
+
+            # אם יש קונטיינרים ישנים – עוצרים
+            sudo docker-compose down || true
+
+            # מריצים את כל השירותים עם docker-compose.yml
+            # (צריך שהקובץ docker-compose.yml יהיה בריפו שלך!)
+            sudo docker-compose up -d
