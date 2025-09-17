@@ -26,27 +26,50 @@ jobs:
           pip install -r requirements.txt
           pip install requests pymysql
 
-      - name: Run tests
+      - name: Run Flask (background)
         run: |
-          echo "✅ Running tests..."
-          pytest -v || true
+          nohup python app.py &
+          sleep 20
 
-      - name: Build Docker image
+      - name: Build test container
+        run: docker build -t server_test ./servertest
+
+      - name: Run test container
+        run: docker run --name server_test_container --network host server_test || true
+
+      - name: Show test logs
+        if: always()
+        run: docker logs server_test_container
+
+      - name: Run pytest
         run: |
-          docker build -t my_project_image:latest .
+          python -m pytest -v || true
 
-      - name: Save image as artifact
+      - name: Stop Flask
+        if: always()
+        run: |
+          pkill -f "python app.py" || true
+
+      # בונים אימג' של הפרויקט
+      - name: Build project image
+        run: docker build -t my_project_image:latest .
+
+      # שומרים אותו כקובץ tar
+      - name: Save image
+        run: docker save my_project_image:latest -o project_image.tar
+
+      # מעלים את הקובץ כארטיפקט
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: project_image
           path: project_image.tar
-        run: docker save my_project_image:latest -o project_image.tar
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
     env:
-      DEPLOY_HOST: 3.89.223.139
+      DEPLOY_HOST: 3.89.223.139          # ← כתובת ה־EC2 שלך
       DEPLOY_USER: ec2-user
     steps:
       - name: Download image artifact
@@ -71,20 +94,15 @@ jobs:
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            echo "🔧 Installing dependencies..."
-            sudo yum update -y
-            sudo yum install -y amazon-linux-extras
-            sudo amazon-linux-extras enable docker
-            sudo yum install -y docker
-            sudo service docker start
-            sudo usermod -aG docker ec2-user
+            if ! command -v docker &> /dev/null
+            then
+              echo "Installing Docker..."
+              sudo yum update -y
+              sudo amazon-linux-extras install docker -y
+              sudo service docker start
+              sudo usermod -aG docker ec2-user
+            fi
 
-            # מתקין ספריות חסרות
-            sudo yum install -y compat-openssl11
-            sudo yum install -y glibc
-            sudo yum install -y libxcrypt-compat
-
-            # מתקין Docker Compose
             if ! command -v docker-compose &> /dev/null
             then
               echo "Installing Docker Compose..."
@@ -105,14 +123,14 @@ jobs:
             sudo mkdir -p /var/test_for_check
             cd /var/test_for_check
 
-            echo "📦 Loading Docker image..."
+            echo "Loading image..."
             sudo docker load -i /tmp/project_image.tar
 
-            echo "🛑 Stopping old containers..."
+            echo "Stopping old containers (if exist)..."
             sudo docker-compose down || true
 
-            echo "🚀 Starting new container..."
+            echo "Starting new containers..."
             sudo docker-compose up -d
 
-            echo "✅ Deployment finished!"
-            
+            echo "Containers running:"
+            sudo docker ps -a
