@@ -1,4 +1,4 @@
-name: CI and Deploy with Docker
+name: CI and Deploy with Docker Compose
 
 on:
   push:
@@ -31,15 +31,8 @@ jobs:
           nohup python app.py &
           sleep 20
 
-      - name: Build test container
-        run: docker build -t server_test ./servertest
-
       - name: Run test container
-        run: docker run --name server_test_container --network host server_test || true
-
-      - name: Show test logs
-        if: always()
-        run: docker logs server_test_container
+        run: docker build -t server_test ./servertest && docker run --rm server_test || true
 
       - name: Run pytest
         run: |
@@ -57,14 +50,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Build project image
         run: docker build -t my_project_image:latest .
 
-      - name: Save image as tar
+      - name: Save Docker image
         run: docker save my_project_image:latest -o project_image.tar
 
-      - name: Upload image to runner tmp
-        uses: actions/upload-artifact@v4
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v3
         with:
           name: project_image
           path: project_image.tar
@@ -73,11 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     env:
-      DEPLOY_HOST: ec2-3-89-223-139.compute-1.amazonaws.com
+      DEPLOY_HOST: ec2-3-89-223-139.compute-1.amazonaws.com   # עדכן לפי ה-EC2 שלך
       DEPLOY_USER: ec2-user
     steps:
       - name: Download image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: project_image
           path: .
@@ -91,27 +84,7 @@ jobs:
           source: "project_image.tar"
           target: "/tmp/project_image.tar"
 
-      - name: Install Docker on EC2
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ env.DEPLOY_HOST }}
-          username: ${{ env.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          script: |
-            sudo yum update -y || sudo apt-get update -y
-            if command -v yum >/dev/null 2>&1; then
-              sudo amazon-linux-extras enable docker
-              sudo yum install -y docker
-              sudo service docker start
-              sudo usermod -aG docker ec2-user
-            fi
-            if command -v apt-get >/dev/null 2>&1; then
-              sudo apt-get install -y docker.io
-              sudo systemctl start docker
-              sudo usermod -aG docker $USER
-            fi
-
-      - name: Load image and run container on EC2
+      - name: Load image and run with docker-compose
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ env.DEPLOY_HOST }}
@@ -119,10 +92,46 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             sudo mkdir -p /var/test_for_check
-            sudo mv /tmp/project_image.tar /var/test_for_check/
             cd /var/test_for_check
-            sudo docker load -i project_image.tar
-            sudo docker stop my_app || true
-            sudo docker rm my_app || true
-            sudo docker run -d --name my_app -p 80:5000 my_project_image:latest
-            sudo docker ps -a
+
+            # לטעון את האימייג' ששלחנו
+            sudo docker load -i /tmp/project_image.tar
+
+            # ליצור docker-compose.yml
+            cat <<EOF | sudo tee docker-compose.yml
+            version: "3.8"
+            services:
+              app:
+                image: my_project_image:latest
+                container_name: flask_app
+                ports:
+                  - "80:5000"
+                environment:
+                  DB_HOST: mysql
+                  DB_NAME: flask
+                  DB_USER: flask
+                  DB_PASSWORD: password
+                depends_on:
+                  - mysql
+
+              mysql:
+                image: mysql:5.7
+                container_name: flask_mysql
+                restart: unless-stopped
+                environment:
+                  MYSQL_ROOT_PASSWORD: password
+                  MYSQL_DATABASE: flask
+                  MYSQL_USER: flask
+                  MYSQL_PASSWORD: password
+                volumes:
+                  - mysql-data:/var/lib/mysql
+                ports:
+                  - "3306:3306"
+
+            volumes:
+              mysql-data:
+            EOF
+
+            # להריץ את הקומפוז
+            sudo docker-compose down || true
+            sudo docker-compose up -d
