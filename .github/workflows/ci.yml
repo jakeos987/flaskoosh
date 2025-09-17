@@ -1,10 +1,7 @@
-name: CI and Deploy with Docker Compose
+name: CI/CD with Docker and Deploy to EC2
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
 
@@ -24,38 +21,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install requests pymysql
+          pip install pytest requests pymysql
 
-      - name: Run Flask (background)
+      - name: Run tests
         run: |
-          nohup python app.py &
-          sleep 20
+          pytest -v || true
 
-      - name: Run test container
-        run: |
-          docker build -t server_test ./servertest
-          docker run --name server_test_container --network host server_test || true
-
-      - name: Show test logs
-        if: always()
-        run: docker logs server_test_container
-
-      - name: Run pytest
-        run: |
-          python -m pytest -v || true
-
-      - name: Stop Flask
-        if: always()
-        run: |
-          pkill -f "python app.py" || true
-
-      - name: Build project image
+      - name: Build Docker image
         run: docker build -t my_project_image:latest .
 
-      - name: Save Docker image locally
+      - name: Save Docker image
         run: docker save my_project_image:latest -o project_image.tar
 
-      - name: Save Docker image as artifact
+      - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: project_image
@@ -65,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     env:
-      DEPLOY_HOST: 3.89.223.139   # ← זה ה-Public IP של ה-EC2 שלך
+      DEPLOY_HOST: 3.89.223.139   # ה-IP או ה-DNS של ה-EC2 שלך
       DEPLOY_USER: ec2-user
     steps:
       - name: Download image artifact
@@ -83,14 +61,14 @@ jobs:
           source: "project_image.tar"
           target: "/tmp/project_image.tar"
 
-      - name: Load image and run with docker-compose
+      - name: Install Docker & Docker Compose on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            # מתקינים Docker אם הוא לא קיים
+            # התקנת Docker
             if ! command -v docker &> /dev/null
             then
               echo "Installing Docker..."
@@ -100,21 +78,35 @@ jobs:
               sudo usermod -aG docker ec2-user
             fi
 
-            # מתקינים Docker Compose
-            sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
+            # התקנת Docker Compose
+            if ! command -v docker-compose &> /dev/null
+            then
+              echo "Installing Docker Compose..."
+              sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+
+            docker --version
             docker-compose --version
 
-            # יוצרים תיקיה באינסטנס
+      - name: Load image and run container with docker-compose
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ env.DEPLOY_HOST }}
+          username: ${{ env.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
             sudo mkdir -p /var/test_for_check
             cd /var/test_for_check
 
-            # טוענים את האימג' שהעברנו
+            # טוענים את האימג' ששלחנו
             sudo docker load -i /tmp/project_image.tar
 
-            # אם יש קונטיינרים ישנים – עוצרים
+            # עוצרים קונטיינרים קיימים
             sudo docker-compose down || true
 
-            # מריצים את כל השירותים עם docker-compose.yml
-            # (צריך שהקובץ docker-compose.yml יהיה בריפו שלך!)
+            # מפעילים מחדש עם compose
             sudo docker-compose up -d
+
+            # מציגים קונטיינרים רצים
+            sudo docker ps -a
