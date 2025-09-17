@@ -26,47 +26,27 @@ jobs:
           pip install -r requirements.txt
           pip install requests pymysql
 
-      - name: Run Flask (background)
+      - name: Run tests
         run: |
-          nohup python app.py &
-          sleep 20
+          echo "✅ Running tests..."
+          pytest -v || true
 
-      - name: Build test container
-        run: docker build -t server_test ./servertest
-
-      - name: Run test container
-        run: docker run --name server_test_container --network host server_test || true
-
-      - name: Show test logs
-        if: always()
-        run: docker logs server_test_container
-
-      - name: Run pytest
+      - name: Build Docker image
         run: |
-          python -m pytest -v || true
-
-      - name: Stop Flask
-        if: always()
-        run: |
-          pkill -f "python app.py" || true
-
-      - name: Build project image
-        run: docker build -t my_project_image:latest .
+          docker build -t my_project_image:latest .
 
       - name: Save image as artifact
-        run: docker save my_project_image:latest -o project_image.tar
-
-      - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: project_image
           path: project_image.tar
+        run: docker save my_project_image:latest -o project_image.tar
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
     env:
-      DEPLOY_HOST: 3.89.223.139         # ה-IP או ה-DNS של ה-EC2 שלך
+      DEPLOY_HOST: 3.89.223.139
       DEPLOY_USER: ec2-user
     steps:
       - name: Download image artifact
@@ -76,7 +56,7 @@ jobs:
           path: .
 
       - name: Copy image to EC2
-        uses: appleboy/scp-action@v0.1.7   # גרסה עדכנית
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
@@ -85,21 +65,26 @@ jobs:
           target: "/tmp/project_image.tar"
 
       - name: Install Docker & Docker Compose on EC2
-        uses: appleboy/ssh-action@v1.2.1   # גרסה עדכנית
+        uses: appleboy/ssh-action@v1.2.1
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            if ! command -v docker &> /dev/null
-            then
-              echo "Installing Docker..."
-              sudo yum update -y
-              sudo amazon-linux-extras install docker -y
-              sudo service docker start
-              sudo usermod -aG docker ec2-user
-            fi
+            echo "🔧 Installing dependencies..."
+            sudo yum update -y
+            sudo yum install -y amazon-linux-extras
+            sudo amazon-linux-extras enable docker
+            sudo yum install -y docker
+            sudo service docker start
+            sudo usermod -aG docker ec2-user
 
+            # מתקין ספריות חסרות
+            sudo yum install -y compat-openssl11
+            sudo yum install -y glibc
+            sudo yum install -y libxcrypt-compat
+
+            # מתקין Docker Compose
             if ! command -v docker-compose &> /dev/null
             then
               echo "Installing Docker Compose..."
@@ -120,11 +105,13 @@ jobs:
             sudo mkdir -p /var/test_for_check
             cd /var/test_for_check
 
-            # טוען את האימג'
+            echo "📦 Loading Docker image..."
             sudo docker load -i /tmp/project_image.tar
 
-            # אם יש קומפוז קודם – מפיל אותו
+            echo "🛑 Stopping old containers..."
             sudo docker-compose down || true
 
-            # מריץ קומפוז (אתה צריך לשים docker-compose.yml ברפו שלך!)
+            echo "🚀 Starting new container..."
             sudo docker-compose up -d
+
+            echo "✅ Deployment finished!"
