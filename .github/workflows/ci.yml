@@ -75,7 +75,7 @@ jobs:
         run: |
           rsync -avz -e "ssh -o StrictHostKeyChecking=no -i deploy_key" project_image.tar $DEPLOY_USER@$DEPLOY_HOST:/tmp/
 
-      - name: Load image and prepare folder on EC2
+      - name: Load image and run container on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ env.DEPLOY_HOST }}
@@ -86,4 +86,9 @@ jobs:
             sudo mv /tmp/project_image.tar /var/test_for_check/
             cd /var/test_for_check
             sudo docker load -i project_image.tar
-            sudo ls -lh /var/test_for_check
+            # עצור קונטיינר קודם אם קיים
+            sudo docker stop my_app || true
+            sudo docker rm my_app || true
+            # הרץ קונטיינר חדש
+            sudo docker run -d --name my_app -p 80:5000 my_project_image:latest
+            sudo docker ps -a
